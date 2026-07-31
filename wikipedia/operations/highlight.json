@@ -1,0 +1,89 @@
+{# Operations for the "highlighting" challenge: ES|QL HIGHLIGHT vs Query DSL highlighting.
+   Every highlight operation has a source-free twin without highlighting ("-nosource");
+   the primary metric is the per-engine delta between an operation and its twin.
+   All operations share one seed so an operation and its twin sample the same queries. #}
+{% set p_highlight_size = highlight_search_size | default(10) | int %}
+{% set p_highlight_seed = highlight_query_seed | default(1707) | int %}
+{% set esql_highlight_operations = [
+  {"name": "esql-match-nosource",                   "query_type": "match",        "fields": "title,content"},
+  {"name": "esql-match-highlight",                  "query_type": "match",        "fields": "title,content", "highlight": true},
+  {"name": "esql-match-nosource-content",           "query_type": "match",        "fields": "content"},
+  {"name": "esql-match-highlight-content",          "query_type": "match",        "fields": "content",       "highlight": true},
+  {"name": "esql-match-nosource-title",             "query_type": "match",        "fields": "title"},
+  {"name": "esql-match-highlight-title",            "query_type": "match",        "fields": "title",         "highlight": true},
+  {"name": "esql-match-highlight-presort",          "query_type": "match",        "fields": "title,content", "highlight": true, "placement": "pre-sort"},
+  {"name": "esql-phrase-nosource",                  "query_type": "match_phrase", "fields": "content"},
+  {"name": "esql-phrase-highlight",                 "query_type": "match_phrase", "fields": "content",       "highlight": true},
+  {"name": "esql-qstr-bool-nosource",               "query_type": "qstr-bool",    "fields": "content"},
+  {"name": "esql-qstr-bool-highlight",              "query_type": "qstr-bool",    "fields": "content",       "highlight": true},
+  {"name": "esql-wildcard-nosource",                "query_type": "wildcard",     "fields": "content"},
+  {"name": "esql-wildcard-highlight",               "query_type": "wildcard",     "fields": "content",       "highlight": true},
+  {"name": "esql-fuzzy-nosource",                   "query_type": "fuzzy",        "fields": "content"},
+  {"name": "esql-fuzzy-highlight",                  "query_type": "fuzzy",        "fields": "content",       "highlight": true},
+  {"name": "esql-highlight-miss",                   "query_type": "match",        "fields": "content",       "highlight": true, "miss": true},
+  {"name": "esql-highlight-miss-nomatchsize",       "query_type": "match",        "fields": "content",       "highlight": true, "miss": true, "options": {"no_match_size": 100}},
+  {"name": "esql-highlight-1frag",                  "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 1}},
+  {"name": "esql-highlight-orderscore",             "query_type": "match",        "fields": "content",       "highlight": true, "options": {"order": "score"}},
+  {"name": "esql-profile-match-highlight",          "query_type": "match",        "fields": "title,content", "highlight": true, "op_type": "esql-profile"},
+  {"name": "esql-profile-match-highlight-content",  "query_type": "match",        "fields": "content",       "highlight": true, "op_type": "esql-profile"},
+  {"name": "esql-profile-match-highlight-presort",  "query_type": "match",        "fields": "title,content", "highlight": true, "placement": "pre-sort", "op_type": "esql-profile"}
+] %}
+{% set dsl_highlight_operations = [
+  {"name": "dsl-match-nosource",                    "query_type": "match",        "fields": "title,content"},
+  {"name": "dsl-match-highlight",                   "query_type": "match",        "fields": "title,content", "highlight": true},
+  {"name": "dsl-match-nosource-content",            "query_type": "match",        "fields": "content"},
+  {"name": "dsl-match-highlight-content",           "query_type": "match",        "fields": "content",       "highlight": true},
+  {"name": "dsl-match-nosource-title",              "query_type": "match",        "fields": "title"},
+  {"name": "dsl-match-highlight-title",             "query_type": "match",        "fields": "title",         "highlight": true},
+  {"name": "dsl-phrase-nosource",                   "query_type": "match_phrase", "fields": "content"},
+  {"name": "dsl-phrase-highlight",                  "query_type": "match_phrase", "fields": "content",       "highlight": true},
+  {"name": "dsl-qstr-bool-nosource",                "query_type": "qstr-bool",    "fields": "content"},
+  {"name": "dsl-qstr-bool-highlight",               "query_type": "qstr-bool",    "fields": "content",       "highlight": true},
+  {"name": "dsl-wildcard-nosource",                 "query_type": "wildcard",     "fields": "content"},
+  {"name": "dsl-wildcard-highlight",                "query_type": "wildcard",     "fields": "content",       "highlight": true},
+  {"name": "dsl-fuzzy-nosource",                    "query_type": "fuzzy",        "fields": "content"},
+  {"name": "dsl-fuzzy-highlight",                   "query_type": "fuzzy",        "fields": "content",       "highlight": true},
+  {"name": "dsl-highlight-miss",                    "query_type": "match",        "fields": "content",       "highlight": true, "miss": true},
+  {"name": "dsl-highlight-miss-nomatchsize",        "query_type": "match",        "fields": "content",       "highlight": true, "miss": true, "options": {"no_match_size": 100}},
+  {"name": "dsl-highlight-1frag",                   "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 1}},
+  {"name": "dsl-highlight-orderscore",              "query_type": "match",        "fields": "content",       "highlight": true, "options": {"order": "score"}}
+] %}
+{% for op in esql_highlight_operations %}
+{
+  "name": "{{ op.name }}",
+  "operation-type": "{{ op.get("op_type", "esql") }}",
+  "param-source": "esql-search",
+  "query-type": "{{ op.query_type }}",
+  "fields": "{{ op.fields }}",
+  "source": false,
+  "highlight": {{ op.get("highlight", false) | tojson }},
+  {% if op.get("placement") %}"highlight-placement": "{{ op.placement }}",
+  {% endif %}{% if op.get("options") %}"highlight-options": {{ op.options | tojson }},
+  {% endif %}{% if op.get("miss") %}"highlight-miss": true,
+  {% endif %}"detailed-results": true,
+  "size": {{ p_highlight_size }},
+  "seed": {{ p_highlight_seed }}
+},
+{% endfor %}
+{% for op in dsl_highlight_operations %}
+{
+  "name": "{{ op.name }}",
+  "operation-type": "search",
+  "param-source": "query-search",
+  "query-type": "{{ op.query_type }}",
+  "fields": "{{ op.fields }}",
+  "source": false,
+  "highlight": {{ op.get("highlight", false) | tojson }},
+  {% if op.get("options") %}"highlight-options": {{ op.options | tojson }},
+  {% endif %}{% if op.get("miss") %}"highlight-miss": true,
+  {% endif %}"detailed-results": true,
+  "size": {{ p_highlight_size }},
+  "seed": {{ p_highlight_seed }}
+},
+{% endfor %}
+{
+  "name": "esql-highlight-smoke",
+  "operation-type": "esql",
+  "query": "FROM wikipedia METADATA _score | WHERE MATCH(title, \"wikipedia\") | SORT _score DESC | LIMIT 1 | HIGHLIGHT MATCH(title, \"wikipedia\") ON title | KEEP _score, highlight_title",
+  "include-in-reporting": false
+}

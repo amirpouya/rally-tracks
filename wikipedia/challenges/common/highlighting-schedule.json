@@ -1,0 +1,121 @@
+{# Schedule for the "highlighting" challenge (requires an Elasticsearch SNAPSHOT build,
+   as the ES|QL HIGHLIGHT command is gated on snapshot/dev builds).
+   Twins run adjacent to their highlight operation so the op-minus-twin delta is
+   computed under comparable cache conditions. Options variations and forced-miss
+   operations run in the single-client latency pass only, to keep the grid sane. #}
+{% set is_esql_profiling_enabled = (esql_profiling_enabled | default(true)) %}
+{% set p_hl_clients = highlight_search_clients | default(20) | int %}
+{% set p_hl_warmup = highlight_warmup_time_period | default(10) | int %}
+{% set p_hl_period = highlight_time_period | default(60) | int %}
+{% set p_hl_latency_throughput = highlight_latency_target_throughput | default(2) %}
+{% set p_hl_profile_throughput = highlight_profile_target_throughput | default(1) %}
+{% set highlight_core_tasks = [
+  "esql-match-nosource", "esql-match-highlight",
+  "dsl-match-nosource", "dsl-match-highlight",
+  "esql-match-nosource-content", "esql-match-highlight-content",
+  "dsl-match-nosource-content", "dsl-match-highlight-content",
+  "esql-match-nosource-title", "esql-match-highlight-title",
+  "dsl-match-nosource-title", "dsl-match-highlight-title",
+  "esql-match-highlight-presort",
+  "esql-phrase-nosource", "esql-phrase-highlight",
+  "dsl-phrase-nosource", "dsl-phrase-highlight",
+  "esql-qstr-bool-nosource", "esql-qstr-bool-highlight",
+  "dsl-qstr-bool-nosource", "dsl-qstr-bool-highlight",
+  "esql-wildcard-nosource", "esql-wildcard-highlight",
+  "dsl-wildcard-nosource", "dsl-wildcard-highlight",
+  "esql-fuzzy-nosource", "esql-fuzzy-highlight",
+  "dsl-fuzzy-nosource", "dsl-fuzzy-highlight"
+] %}
+{% set highlight_options_tasks = [
+  "esql-highlight-miss", "dsl-highlight-miss",
+  "esql-highlight-miss-nomatchsize", "dsl-highlight-miss-nomatchsize",
+  "esql-highlight-1frag", "dsl-highlight-1frag",
+  "esql-highlight-orderscore", "dsl-highlight-orderscore"
+] %}
+{% set highlight_profile_tasks = [
+  "esql-profile-match-highlight",
+  "esql-profile-match-highlight-content",
+  "esql-profile-match-highlight-presort"
+] %}
+{
+  "name": "delete-index",
+  "operation": "delete-index",
+  "tags": ["setup"]
+},
+{
+  "name": "create-index",
+  "operation": "create-index",
+  "tags": ["setup"]
+},
+{
+  "name": "check-cluster-health",
+  "operation": "check-cluster-health",
+  "tags": ["setup"]
+},
+{
+  "name": "initial-documents-indexing",
+  "operation": "initial-documents-indexing",
+  "tags": ["index"],
+  "warmup-time-period": {{ initial_indexing_bulk_warmup_time_period | default(40) | int }},
+  "clients": {{ initial_indexing_bulk_clients | default(5) | int }}
+},
+{
+  "name": "refresh-after-index",
+  "operation": "refresh-after-index",
+  "tags": ["index"]
+},
+{
+  "name": "force-merge",
+  "operation": "force-merge",
+  "tags": ["index"]
+},
+{
+  "name": "refresh-after-force-merge",
+  "operation": "refresh-after-force-merge",
+  "tags": ["index"]
+},
+{
+  "name": "wait-until-merges-finish-after-index",
+  "operation": "wait-until-merges-finish-after-index",
+  "tags": ["index"]
+},
+{
+  "name": "esql-highlight-smoke",
+  "operation": "esql-highlight-smoke",
+  "tags": ["setup"]
+},
+{% for task in highlight_core_tasks + highlight_options_tasks %}
+{
+  "name": "latency-{{ task }}",
+  "operation": "{{ task }}",
+  "clients": 1,
+  "target-throughput": {{ p_hl_latency_throughput }},
+  "warmup-time-period": {{ p_hl_warmup }},
+  "time-period": {{ p_hl_period }},
+  "tags": ["highlight-latency"]
+},
+{% endfor %}
+{% for task in highlight_core_tasks %}
+{
+  "name": "throughput-{{ task }}",
+  "operation": "{{ task }}",
+  "clients": {{ p_hl_clients }},
+  "warmup-time-period": {{ p_hl_warmup }},
+  "time-period": {{ p_hl_period }},
+  "tags": ["highlight-throughput"]
+}{{ "," if not loop.last }}
+{% endfor %}
+{% if is_esql_profiling_enabled %}
+,
+{% for task in highlight_profile_tasks %}
+{
+  "name": "{{ task }}",
+  "operation": "{{ task }}",
+  "clients": 1,
+  "target-throughput": {{ p_hl_profile_throughput }},
+  "warmup-time-period": {{ p_hl_warmup }},
+  "time-period": {{ p_hl_period }},
+  "tags": ["esql-profile"]
+}{{ "," if not loop.last }}
+{% endfor %}
+{% endif %}

@@ -39,7 +39,7 @@ class TestTrackRepository:
         "nyc_taxis": ["update-aggs-only"],
     }
     skip_challenges = {"esql": ["query-searchable-snapshot"]}
-    snapshot_only_challenges = {"wikipedia": ["esql-full-text-functions"]}
+    snapshot_only_challenges = {"wikipedia": ["esql-full-text-functions", "highlighting"]}
 
     track_multiple_params = {"github_archive": {"data_stream": True}}
 

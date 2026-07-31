@@ -205,4 +205,12 @@
     "schedule": [
       {{ rally.collect(parts="common/parallel-update-search-schedule.json") }}
     ]
+  },
+  {
+    "name": "highlighting",
+    "description": "Compares ES|QL HIGHLIGHT with Query DSL highlighting; requires an Elasticsearch SNAPSHOT build",
+    "default": false,
+    "schedule": [
+      {{ rally.collect(parts="common/highlighting-schedule.json") }}
+    ]
   }

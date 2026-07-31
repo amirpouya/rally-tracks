@@ -50,7 +50,7 @@ This track accepts the following parameters with Rally 0.8.0+ using `--track-par
 - Index settings:
   - `number_of_replicas` (default: `0`)
   - `number_of_shards` (default: `1`)
-  - `index_mapping_type` (default: `minimal`)
+  - `index_mapping_type` (default: `minimal`): `minimal` (plain `text` fields), `full` (search-application-style analyzers) or `offsets` (`minimal` plus `index_options: offsets` on `title` and `content`, letting Query DSL highlighting read offsets from postings)
 - Initial indexing:
   - `initial_indexing_bulk_clients` (default: `5`)
   - `initial_indexing_bulk_size` (default: `500`)
@@ -155,6 +155,47 @@ Initial ingest of the full corpus, wait for merges to settle, then run a single 
   - `esql_profiling_enabled` (default: true) : True to add separate profiling runs for ESQL operations.
   - `profile_iterations` (default: 100) - Number of profiling iterations that each client executes.
 
+
+### Parameters for highlighting challenge
+
+Compares the ES|QL `HIGHLIGHT` command with Query DSL (`_search`) highlighting. Every
+highlight operation has a source-free twin without highlighting (`*-nosource`); the primary
+metric is the per-engine delta between an operation and its twin, which isolates the
+highlighting cost from engine differences (planning, exchange, response encoding). All
+operations sample queries with the same fixed seed so an operation and its twin see the
+same query sequence.
+
+**Requires an Elasticsearch SNAPSHOT build**: the ES|QL `HIGHLIGHT` command only exists in
+snapshot/dev builds. The challenge starts with a cheap one-row `HIGHLIGHT` smoke operation
+(`esql-highlight-smoke`) so a wrong distribution fails fast with a parse error.
+
+The challenge runs each operation twice: a latency pass (1 client at a fixed target
+throughput) followed by a throughput pass (`highlight_search_clients` clients, unthrottled).
+Options variations (forced-miss, `no_match_size`, `number_of_fragments`, `order: score`) run
+in the latency pass only. ES|QL profile twins run last at a low rate; their per-operator
+breakdown (`HighlightOperator.process_ms`) shows the highlight share of total query time.
+
+To measure the DSL-only postings offset source, run the challenge a second time with
+`index_mapping_type:offsets` (requires reindexing; ES|QL always re-analyzes regardless of
+mapping).
+
+- Initial indexing:
+  - `initial_indexing_bulk_clients` (default: `5`)
+  - `initial_indexing_bulk_size` (default: `500`)
+  - `initial_indexing_ingest_percentage` (default: `100`)
+  - `initial_indexing_bulk_warmup_time_period` (default: `40`)
+- Search operations:
+  - `highlight_search_size` (default: `10`): Number of rows/hits requested (`LIMIT`/`size`). Run the size grid (e.g. 10 and 100) as separate races.
+  - `highlight_query_seed` (default: `1707`): Random seed for weighted query sampling.
+  - `highlight_search_clients` (default: `20`): Clients in the throughput pass.
+  - `highlight_latency_target_throughput` (default: `2`): Target ops/s in the single-client latency pass.
+  - `highlight_warmup_time_period` (default: `10`)
+  - `highlight_time_period` (default: `60`)
+  - `esql_profiling_enabled` (default: `true`): Adds ES|QL profile twins at the end of the schedule.
+  - `highlight_profile_target_throughput` (default: `1`): Target ops/s for the profile twins.
+
+Task tags allow running a subset, e.g. `--exclude-tasks="tag:highlight-throughput"` for a
+latency-only run.
 
 ### License
 
