@@ -24,6 +24,8 @@
   {"name": "esql-highlight-miss-nomatchsize",       "query_type": "match",        "fields": "content",       "highlight": true, "miss": true, "options": {"no_match_size": 100}},
   {"name": "esql-highlight-1frag",                  "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 1}},
   {"name": "esql-highlight-orderscore",             "query_type": "match",        "fields": "content",       "highlight": true, "options": {"order": "score"}},
+  {"name": "esql-highlight-wholefield",             "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 0}},
+  {"name": "esql-highlight-htmlencoder",            "query_type": "match",        "fields": "content",       "highlight": true, "options": {"encoder": "html"}},
   {"name": "esql-profile-match-highlight",          "query_type": "match",        "fields": "title,content", "highlight": true, "op_type": "esql-profile"},
   {"name": "esql-profile-match-highlight-content",  "query_type": "match",        "fields": "content",       "highlight": true, "op_type": "esql-profile"},
   {"name": "esql-profile-match-highlight-presort",  "query_type": "match",        "fields": "title,content", "highlight": true, "placement": "pre-sort", "op_type": "esql-profile"}
@@ -46,7 +48,9 @@
   {"name": "dsl-highlight-miss",                    "query_type": "match",        "fields": "content",       "highlight": true, "miss": true},
   {"name": "dsl-highlight-miss-nomatchsize",        "query_type": "match",        "fields": "content",       "highlight": true, "miss": true, "options": {"no_match_size": 100}},
   {"name": "dsl-highlight-1frag",                   "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 1}},
-  {"name": "dsl-highlight-orderscore",              "query_type": "match",        "fields": "content",       "highlight": true, "options": {"order": "score"}}
+  {"name": "dsl-highlight-orderscore",              "query_type": "match",        "fields": "content",       "highlight": true, "options": {"order": "score"}},
+  {"name": "dsl-highlight-wholefield",              "query_type": "match",        "fields": "content",       "highlight": true, "options": {"number_of_fragments": 0}},
+  {"name": "dsl-highlight-htmlencoder",             "query_type": "match",        "fields": "content",       "highlight": true, "options": {"encoder": "html"}}
 ] %}
 {% for op in esql_highlight_operations %}
 {

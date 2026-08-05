@@ -149,9 +149,7 @@ class TestDslHighlightParams:
     def test_forced_miss_adds_per_field_highlight_query(self):
         params = dsl_params(**{"source": False, "highlight": True, "highlight-miss": True, "fields": "content"})
         highlight = params["body"]["highlight"]
-        assert highlight["fields"]["content"]["highlight_query"] == {
-            "match": {"content": wikipedia_track.ABSENT_QUERY_TERM}
-        }
+        assert highlight["fields"]["content"]["highlight_query"] == {"match": {"content": wikipedia_track.ABSENT_QUERY_TERM}}
 
     def test_options_merge_into_highlight_body(self):
         params = dsl_params(**{"source": False, "highlight": True, "fields": "content", "highlight-options": {"order": "score"}})
@@ -194,6 +192,10 @@ class TestRenderedTemplates:
 
         profile = by_name["esql-profile-match-highlight"]
         assert profile["operation-type"] == "esql-profile"
+
+        for engine in ("esql", "dsl"):
+            assert by_name[f"{engine}-highlight-wholefield"]["highlight-options"] == {"number_of_fragments": 0}
+            assert by_name[f"{engine}-highlight-htmlencoder"]["highlight-options"] == {"encoder": "html"}
 
     def test_highlight_schedule_references_defined_operations(self):
         defined = set()

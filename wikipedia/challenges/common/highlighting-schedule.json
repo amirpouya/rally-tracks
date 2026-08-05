@@ -30,7 +30,9 @@
   "esql-highlight-miss", "dsl-highlight-miss",
   "esql-highlight-miss-nomatchsize", "dsl-highlight-miss-nomatchsize",
   "esql-highlight-1frag", "dsl-highlight-1frag",
-  "esql-highlight-orderscore", "dsl-highlight-orderscore"
+  "esql-highlight-orderscore", "dsl-highlight-orderscore",
+  "esql-highlight-wholefield", "dsl-highlight-wholefield",
+  "esql-highlight-htmlencoder", "dsl-highlight-htmlencoder"
 ] %}
 {% set highlight_profile_tasks = [
   "esql-profile-match-highlight",

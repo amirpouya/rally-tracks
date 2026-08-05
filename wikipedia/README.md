@@ -171,8 +171,9 @@ snapshot/dev builds. The challenge starts with a cheap one-row `HIGHLIGHT` smoke
 
 The challenge runs each operation twice: a latency pass (1 client at a fixed target
 throughput) followed by a throughput pass (`highlight_search_clients` clients, unthrottled).
-Options variations (forced-miss, `no_match_size`, `number_of_fragments`, `order: score`) run
-in the latency pass only. ES|QL profile twins run last at a low rate; their per-operator
+Options variations (forced-miss, `no_match_size`, `number_of_fragments: 1`, `order: score`,
+`number_of_fragments: 0` returning whole field values for response-size effects, and
+`encoder: html`) run in the latency pass only. ES|QL profile twins run last at a low rate; their per-operator
 breakdown (`HighlightOperator.process_ms`) shows the highlight share of total query time.
 
 To measure the DSL-only postings offset source, run the challenge a second time with
