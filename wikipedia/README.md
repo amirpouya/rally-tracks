@@ -192,6 +192,7 @@ mapping).
   - `highlight_latency_target_throughput` (default: `2`): Target ops/s in the single-client latency pass.
   - `highlight_warmup_time_period` (default: `10`)
   - `highlight_time_period` (default: `60`)
+  - `highlight_latency_time_period` (default: `highlight_time_period`): Measurement period for the single-client latency pass only. Raise it (e.g. `300` → ~600 samples per task at the default 2 ops/s) when tail percentiles (p99) need to be reportable.
   - `esql_profiling_enabled` (default: `true`): Adds ES|QL profile twins at the end of the schedule.
   - `highlight_profile_target_throughput` (default: `1`): Target ops/s for the profile twins.
 

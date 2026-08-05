@@ -7,6 +7,9 @@
 {% set p_hl_clients = highlight_search_clients | default(20) | int %}
 {% set p_hl_warmup = highlight_warmup_time_period | default(10) | int %}
 {% set p_hl_period = highlight_time_period | default(60) | int %}
+{# The latency pass drives tail percentiles; give it its own (usually longer) period
+   so p99 rests on enough samples without inflating the throughput pass. #}
+{% set p_hl_latency_period = highlight_latency_time_period | default(p_hl_period) | int %}
 {% set p_hl_latency_throughput = highlight_latency_target_throughput | default(2) %}
 {% set p_hl_profile_throughput = highlight_profile_target_throughput | default(1) %}
 {% set highlight_core_tasks = [
@@ -37,7 +40,9 @@
 {% set highlight_profile_tasks = [
   "esql-profile-match-highlight",
   "esql-profile-match-highlight-content",
-  "esql-profile-match-highlight-presort"
+  "esql-profile-match-highlight-presort",
+  "esql-profile-phrase-highlight",
+  "esql-profile-wildcard-highlight"
 ] %}
 {
   "name": "delete-index",
@@ -93,7 +98,7 @@
   "clients": 1,
   "target-throughput": {{ p_hl_latency_throughput }},
   "warmup-time-period": {{ p_hl_warmup }},
-  "time-period": {{ p_hl_period }},
+  "time-period": {{ p_hl_latency_period }},
   "tags": ["highlight-latency"]
 },
 {% endfor %}

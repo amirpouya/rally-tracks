@@ -28,7 +28,9 @@
   {"name": "esql-highlight-htmlencoder",            "query_type": "match",        "fields": "content",       "highlight": true, "options": {"encoder": "html"}},
   {"name": "esql-profile-match-highlight",          "query_type": "match",        "fields": "title,content", "highlight": true, "op_type": "esql-profile"},
   {"name": "esql-profile-match-highlight-content",  "query_type": "match",        "fields": "content",       "highlight": true, "op_type": "esql-profile"},
-  {"name": "esql-profile-match-highlight-presort",  "query_type": "match",        "fields": "title,content", "highlight": true, "placement": "pre-sort", "op_type": "esql-profile"}
+  {"name": "esql-profile-match-highlight-presort",  "query_type": "match",        "fields": "title,content", "highlight": true, "placement": "pre-sort", "op_type": "esql-profile"},
+  {"name": "esql-profile-phrase-highlight",         "query_type": "match_phrase", "fields": "content",       "highlight": true, "op_type": "esql-profile"},
+  {"name": "esql-profile-wildcard-highlight",       "query_type": "wildcard",     "fields": "content",       "highlight": true, "op_type": "esql-profile"}
 ] %}
 {% set dsl_highlight_operations = [
   {"name": "dsl-match-nosource",                    "query_type": "match",        "fields": "title,content"},

@@ -220,11 +220,22 @@ class TestRenderedTemplates:
         throughput_ops = {t["operation"] for t in throughput}
         assert not any("miss" in op or "1frag" in op or "orderscore" in op for op in throughput_ops)
         # profile twins run last
-        assert [t["operation"] for t in schedule[-3:]] == [
+        assert [t["operation"] for t in schedule[-5:]] == [
             "esql-profile-match-highlight",
             "esql-profile-match-highlight-content",
             "esql-profile-match-highlight-presort",
+            "esql-profile-phrase-highlight",
+            "esql-profile-wildcard-highlight",
         ]
+
+    def test_latency_pass_period_is_independently_configurable(self):
+        schedule = render_json_fragment(
+            TRACK_DIR / "challenges" / "common", "highlighting-schedule.json", highlight_latency_time_period=300
+        )
+        latency = [t for t in schedule if "highlight-latency" in t.get("tags", [])]
+        throughput = [t for t in schedule if "highlight-throughput" in t.get("tags", [])]
+        assert all(t["time-period"] == 300 for t in latency)
+        assert all(t["time-period"] == 60 for t in throughput)
 
     def test_offsets_mapping(self):
         env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(TRACK_DIR)))
