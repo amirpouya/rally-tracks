@@ -1,53 +1,155 @@
 {#
   ES|QL DECAY vs Query DSL function_score decay.
 
-  Every measured case runs three operations over the same date-filtered row set and returns the top 10 scores:
+  Every case scores the rows of a pickup_datetime window and returns the top 10 scores:
     decay-<case>-<window>-esql    ES|QL  EVAL score = DECAY(...) | SORT score DESC | LIMIT 10
     decay-<case>-<window>-dsl     Query DSL function_score (boost_mode: replace) with the same decay function
-    twin-<field>-<window>-esql    ES|QL pipeline identical to the -esql op, but DECAY replaced by a plain read of
-                                  the same field (one per field: geo, numeric, date), so (esql - twin) isolates
-                                  the cost of evaluating DECAY.
-  plus one Query DSL twin per window (twin-<window>-dsl: function_score with a constant weight), so
-  (dsl - dsl twin) is the cost of reading the field and evaluating the decay function in Query DSL.
+  Twins run the same pipeline without the decay function:
+    twin-<kind>-<window>-esql     ES|QL, DECAY replaced by a plain read of the same field (one per field kind),
+                                  so (esql - twin) isolates the cost of evaluating DECAY
+    twin-<window>-dsl             Query DSL function_score with a constant weight, so (dsl - twin) is the cost of
+                                  reading the field and evaluating the decay function
 
-  The corpus is not ordered by time; a day holds ~400k docs and the week ~2.9M docs of the full 165M-doc corpus.
+  Coverage: field kinds geo_point, double, integer and date; decay types gauss, exp and linear; the offset and
+  decay options (the "-opts" cases); four window sizes. The corpus is ordered by month but not within a month:
+  an hour holds ~17k docs, a day ~400k, a week ~2.9M and the month ~12.7M of the full 165M-doc corpus.
+  ES|QL reads geo_point values from _source, which costs tens of microseconds per row, so the ES|QL geo tasks run
+  fewer iterations on the larger windows and are left out of the month window.
+
+  After the latency pass, a throughput pass runs a few hour-window cases with several clients, and a profile pass
+  runs ES|QL day-window cases with profile: true for the per-operator breakdown.
 #}
-{% set decay_windows = [
-  {"name": "day",  "gte": "2015-01-03 00:00:00", "lt": "2015-01-04 00:00:00",
-   "gte_iso": "2015-01-03T00:00:00Z", "lt_iso": "2015-01-04T00:00:00Z",
-   "origin": "2015-01-03 12:00:00", "origin_iso": "2015-01-03T12:00:00Z"},
-  {"name": "week", "gte": "2015-01-01 00:00:00", "lt": "2015-01-08 00:00:00",
-   "gte_iso": "2015-01-01T00:00:00Z", "lt_iso": "2015-01-08T00:00:00Z",
-   "origin": "2015-01-04 12:00:00", "origin_iso": "2015-01-04T12:00:00Z"}
-] %}
-{# Times Square #}
-{% set geo_origin_wkt = 'POINT(-73.9855 40.758)' %}
-{% set geo_origin = {"lat": 40.758, "lon": -73.9855} %}
-{% set decay_cases = [
-  {"name": "geo-gauss",     "field": "pickup_location", "type": "gauss",  "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin_name": "geo", "twin": "ST_X(pickup_location)"},
-  {"name": "geo-exp",       "field": "pickup_location", "type": "exp",    "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin": none},
-  {"name": "geo-linear",    "field": "pickup_location", "type": "linear", "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin": none},
-  {"name": "numeric-gauss", "field": "trip_distance",   "type": "gauss",  "esql_origin": "5.0", "esql_scale": "2.0", "dsl_origin": 5.0, "dsl_scale": 2.0, "twin_name": "numeric", "twin": "trip_distance"},
-  {"name": "date-gauss",    "field": "pickup_datetime", "type": "gauss",  "esql_origin": none, "esql_scale": "6 hours", "dsl_origin": none, "dsl_scale": "6h", "twin_name": "date", "twin": "TO_DOUBLE(pickup_datetime)"}
-] %}
-{% set p_decay_warmup_iterations = decay_warmup_iterations | default(20) %}
-{% set p_decay_iterations = decay_iterations | default(100) %}
-{% set p_decay_request_timeout = decay_request_timeout | default(600) %}
+{% set p_warmup = decay_warmup_iterations | default(20) %}
+{% set p_iterations = decay_iterations | default(100) %}
+{% set p_request_timeout = decay_request_timeout | default(600) %}
+{% set p_throughput_clients = decay_throughput_clients | default(8) %}
+{% set p_throughput_warmup_time_period = decay_throughput_warmup_time_period | default(30) %}
+{% set p_throughput_time_period = decay_throughput_time_period | default(90) %}
+{% set p_profile_iterations = decay_profile_iterations | default(5) %}
 
-{% macro decay_task(name, operation, tags) -%}
-        {
-          "name": "{{ name }}",
-          "operation": {{ operation | tojson }},
-          "tags": {{ tags | tojson }},
-          "clients": 1,
-          "warmup-iterations": {{ p_decay_warmup_iterations }},
-          "iterations": {{ p_decay_iterations }}
-        }
-{%- endmacro %}
+{# geo_esql_* bound the slow ES|QL geo tasks; include_geo: false leaves geo out of a window entirely #}
+{% set decay_windows = [
+  {"name": "hour",  "gte": "2015-01-03 12:00:00", "lt": "2015-01-03 13:00:00", "origin": "2015-01-03 12:30:00",
+   "include_geo": true, "geo_esql_warmup": p_warmup, "geo_esql_iterations": p_iterations},
+  {"name": "day",   "gte": "2015-01-03 00:00:00", "lt": "2015-01-04 00:00:00", "origin": "2015-01-03 12:00:00",
+   "include_geo": true, "geo_esql_warmup": 5, "geo_esql_iterations": 30},
+  {"name": "week",  "gte": "2015-01-01 00:00:00", "lt": "2015-01-08 00:00:00", "origin": "2015-01-04 12:00:00",
+   "include_geo": true, "geo_esql_warmup": 3, "geo_esql_iterations": 20},
+  {"name": "month", "gte": "2015-01-01 00:00:00", "lt": "2015-02-01 00:00:00", "origin": "2015-01-16 12:00:00",
+   "include_geo": false}
+] %}
+
+{# Per field kind: ES|QL literals and Query DSL values for origin, scale and the "-opts" offset. #}
+{% set decay_kinds = {
+  "geo": {"field": "pickup_location",
+          "esql_origin": 'TO_GEOPOINT("POINT(-73.9855 40.758)")', "esql_scale": '"2km"', "esql_offset": '"500m"',
+          "dsl_origin": {"lat": 40.758, "lon": -73.9855}, "dsl_scale": "2km", "dsl_offset": "500m",
+          "twin": "ST_X(pickup_location)"},
+  "double": {"field": "trip_distance",
+             "esql_origin": "5.0", "esql_scale": "2.0", "esql_offset": "1.0",
+             "dsl_origin": 5.0, "dsl_scale": 2.0, "dsl_offset": 1.0,
+             "twin": "trip_distance"},
+  "integer": {"field": "passenger_count",
+              "esql_origin": "1", "esql_scale": "2", "esql_offset": "1",
+              "dsl_origin": 1, "dsl_scale": 2, "dsl_offset": 1,
+              "twin": "TO_DOUBLE(passenger_count)"},
+  "date": {"field": "pickup_datetime",
+           "esql_origin": none, "esql_scale": "6 hours", "esql_offset": "30 minutes",
+           "dsl_origin": none, "dsl_scale": "6h", "dsl_offset": "30m",
+           "twin": "TO_DOUBLE(pickup_datetime)"}
+} %}
+{% set decay_opts_decay = 0.3 %}
+{% set decay_cases = [
+  {"kind": "geo", "type": "gauss", "opts": false}, {"kind": "geo", "type": "exp", "opts": false},
+  {"kind": "geo", "type": "linear", "opts": false}, {"kind": "geo", "type": "gauss", "opts": true},
+  {"kind": "double", "type": "gauss", "opts": false}, {"kind": "double", "type": "exp", "opts": false},
+  {"kind": "double", "type": "linear", "opts": false}, {"kind": "double", "type": "gauss", "opts": true},
+  {"kind": "integer", "type": "gauss", "opts": false},
+  {"kind": "date", "type": "gauss", "opts": false}, {"kind": "date", "type": "exp", "opts": false},
+  {"kind": "date", "type": "linear", "opts": false}, {"kind": "date", "type": "gauss", "opts": true}
+] %}
+{% set decay_throughput_cases = ["geo-gauss", "double-gauss", "date-gauss"] %}
+{% set decay_profile_cases = ["geo-gauss", "double-gauss", "date-gauss"] %}
+
+{# Build every operation once, keyed by "<case>-<window>-<engine>" and "twin-...". #}
+{% set ops = {} %}
+{% for w in decay_windows %}
+  {% set esql_from = 'FROM nyc_taxis | WHERE pickup_datetime >= "' ~ (w.gte | replace(" ", "T")) ~ 'Z" AND pickup_datetime < "' ~ (w.lt | replace(" ", "T")) ~ 'Z"' %}
+  {% set esql_tail = ' | SORT score DESC | LIMIT 10 | KEEP score' %}
+  {% set dsl_filter = {"bool": {"filter": [{"range": {"pickup_datetime": {"gte": w.gte, "lt": w.lt}}}]}} %}
+  {% set _ = ops.update({"twin-" ~ w.name ~ "-dsl": {
+      "operation-type": "search", "index": "nyc_taxis", "request-timeout": p_request_timeout,
+      "body": {"size": 10, "_source": false, "track_total_hits": false,
+               "query": {"function_score": {"query": dsl_filter, "functions": [{"weight": 1}], "boost_mode": "replace"}}}}}) %}
+  {% for k, kind in decay_kinds.items() %}
+    {% set _ = ops.update({"twin-" ~ k ~ "-" ~ w.name ~ "-esql": {
+        "operation-type": "esql", "request-timeout": p_request_timeout,
+        "query": esql_from ~ ' | EVAL score = ' ~ kind.twin ~ esql_tail}}) %}
+  {% endfor %}
+  {% for c in decay_cases %}
+    {% set kind = decay_kinds[c.kind] %}
+    {% set case_name = c.kind ~ "-" ~ c.type ~ ("-opts" if c.opts else "") %}
+    {% set esql_origin = kind.esql_origin if kind.esql_origin is not none else 'TO_DATETIME("' ~ (w.origin | replace(" ", "T")) ~ 'Z")' %}
+    {% set esql_options = '{"type": "' ~ c.type ~ '"' ~ ((', "offset": ' ~ kind.esql_offset ~ ', "decay": ' ~ decay_opts_decay) if c.opts else '') ~ '}' %}
+    {% set dsl_params = {"origin": kind.dsl_origin if kind.dsl_origin is not none else w.origin, "scale": kind.dsl_scale} %}
+    {% if c.opts %}{% set _ = dsl_params.update({"offset": kind.dsl_offset, "decay": decay_opts_decay}) %}{% endif %}
+    {% set _ = ops.update({
+        case_name ~ "-" ~ w.name ~ "-esql": {
+          "operation-type": "esql", "request-timeout": p_request_timeout,
+          "query": esql_from ~ ' | EVAL score = DECAY(' ~ kind.field ~ ', ' ~ esql_origin ~ ', ' ~ kind.esql_scale ~ ', ' ~ esql_options ~ ')' ~ esql_tail},
+        case_name ~ "-" ~ w.name ~ "-dsl": {
+          "operation-type": "search", "index": "nyc_taxis", "request-timeout": p_request_timeout,
+          "body": {"size": 10, "_source": false, "track_total_hits": false,
+                   "query": {"function_score": {"query": dsl_filter, "functions": [{c.type: {kind.field: dsl_params}}], "boost_mode": "replace"}}}}
+      }) %}
+  {% endfor %}
+{% endfor %}
+
+{# Schedule: latency pass, then throughput pass, then profile pass. #}
+{% set tasks = [] %}
+{% for w in decay_windows %}
+  {% set _ = tasks.append({"name": "twin-" ~ w.name ~ "-dsl", "operation": ops["twin-" ~ w.name ~ "-dsl"],
+                           "tags": ["decay", "latency", "twin", "dsl", w.name],
+                           "clients": 1, "warmup-iterations": p_warmup, "iterations": p_iterations}) %}
+  {% set emitted_twins = [] %}
+  {% for c in decay_cases if (c.kind != "geo" or w.include_geo) %}
+    {% set case_name = c.kind ~ "-" ~ c.type ~ ("-opts" if c.opts else "") %}
+    {% set is_slow = c.kind == "geo" %}
+    {% set esql_warmup = w.geo_esql_warmup if is_slow else p_warmup %}
+    {% set esql_iterations = w.geo_esql_iterations if is_slow else p_iterations %}
+    {% set _ = tasks.append({"name": "decay-" ~ case_name ~ "-" ~ w.name ~ "-esql", "operation": ops[case_name ~ "-" ~ w.name ~ "-esql"],
+                             "tags": ["decay", "latency", "esql", w.name, c.kind, case_name],
+                             "clients": 1, "warmup-iterations": esql_warmup, "iterations": esql_iterations}) %}
+    {% set _ = tasks.append({"name": "decay-" ~ case_name ~ "-" ~ w.name ~ "-dsl", "operation": ops[case_name ~ "-" ~ w.name ~ "-dsl"],
+                             "tags": ["decay", "latency", "dsl", w.name, c.kind, case_name],
+                             "clients": 1, "warmup-iterations": p_warmup, "iterations": p_iterations}) %}
+    {% if c.kind not in emitted_twins %}
+      {% set _ = emitted_twins.append(c.kind) %}
+      {% set _ = tasks.append({"name": "twin-" ~ c.kind ~ "-" ~ w.name ~ "-esql", "operation": ops["twin-" ~ c.kind ~ "-" ~ w.name ~ "-esql"],
+                               "tags": ["decay", "latency", "twin", "esql", w.name, c.kind],
+                               "clients": 1, "warmup-iterations": esql_warmup, "iterations": esql_iterations}) %}
+    {% endif %}
+  {% endfor %}
+{% endfor %}
+{% for case_name in decay_throughput_cases %}
+  {% for engine in ["esql", "dsl"] %}
+    {% set _ = tasks.append({"name": "throughput-" ~ case_name ~ "-hour-" ~ engine, "operation": ops[case_name ~ "-hour-" ~ engine],
+                             "tags": ["decay", "throughput", engine, "hour", case_name],
+                             "clients": p_throughput_clients, "warmup-time-period": p_throughput_warmup_time_period,
+                             "time-period": p_throughput_time_period}) %}
+  {% endfor %}
+{% endfor %}
+{% for case_name in decay_profile_cases %}
+  {% set op = ops[case_name ~ "-day-esql"] %}
+  {% set _ = tasks.append({"name": "profile-" ~ case_name ~ "-day-esql",
+                           "operation": {"operation-type": "esql-profile", "request-timeout": p_request_timeout, "query": op.query},
+                           "tags": ["decay", "profile", "esql", "day", case_name],
+                           "clients": 1, "warmup-iterations": 1, "iterations": p_profile_iterations}) %}
+{% endfor %}
 
     {
       "name": "esql-decay",
-      "description": "Compares ES|QL DECAY with Query DSL function_score decay (geo, numeric and date; gauss/exp/linear) over a 1-day and a 1-week time window. Each ES|QL case has a twin that reads the same field without DECAY.",
+      "description": "Compares ES|QL DECAY with Query DSL function_score decay on geo_point, double, integer and date fields (gauss/exp/linear, with and without offset/decay options) over 1-hour to 1-month time windows, with no-decay twins, a throughput pass and an ES|QL profile pass.",
       "default": false,
       "schedule": [
         {
@@ -135,44 +237,8 @@
           "warmup-iterations": 0,
           "iterations": 1
         },
-        {%- for w in decay_windows %}
-        {%- set outer_last = loop.last %}
-        {%- set esql_where = 'FROM nyc_taxis | WHERE pickup_datetime >= "' ~ w.gte_iso ~ '" AND pickup_datetime < "' ~ w.lt_iso ~ '"' %}
-        {%- set esql_tail = ' | SORT score DESC | LIMIT 10 | KEEP score' %}
-        {%- set dsl_filter = {"bool": {"filter": [{"range": {"pickup_datetime": {"gte": w.gte, "lt": w.lt}}}]}} %}
-        {{ decay_task("twin-" ~ w.name ~ "-dsl", {
-            "operation-type": "search",
-            "index": "nyc_taxis",
-            "request-timeout": p_decay_request_timeout,
-            "body": {"size": 10, "_source": false, "track_total_hits": false,
-                     "query": {"function_score": {"query": dsl_filter, "functions": [{"weight": 1}], "boost_mode": "replace"}}}
-          }, ["decay", "twin", "dsl", w.name]) }},
-        {%- for c in decay_cases %}
-        {%- set esql_origin = c.esql_origin if c.esql_origin is not none else 'TO_DATETIME("' ~ w.origin_iso ~ '")' %}
-        {%- set dsl_origin = c.dsl_origin if c.dsl_origin is not none else w.origin %}
-        {%- set esql_decay = 'DECAY(' ~ c.field ~ ', ' ~ esql_origin ~ ', ' ~ c.esql_scale ~ ', {"type": "' ~ c.type ~ '"})' %}
-        {{ decay_task("decay-" ~ c.name ~ "-" ~ w.name ~ "-esql", {
-            "operation-type": "esql",
-            "request-timeout": p_decay_request_timeout,
-            "query": esql_where ~ ' | EVAL score = ' ~ esql_decay ~ esql_tail
-          }, ["decay", "esql", w.name, c.name]) }},
-        {{ decay_task("decay-" ~ c.name ~ "-" ~ w.name ~ "-dsl", {
-            "operation-type": "search",
-            "index": "nyc_taxis",
-            "request-timeout": p_decay_request_timeout,
-            "body": {"size": 10, "_source": false, "track_total_hits": false,
-                     "query": {"function_score": {"query": dsl_filter,
-                                                  "functions": [{c.type: {c.field: {"origin": dsl_origin, "scale": c.dsl_scale}}}],
-                                                  "boost_mode": "replace"}}}
-          }, ["decay", "dsl", w.name, c.name]) }}
-        {%- if c.twin is not none %},
-        {{ decay_task("twin-" ~ c.twin_name ~ "-" ~ w.name ~ "-esql", {
-            "operation-type": "esql",
-            "request-timeout": p_decay_request_timeout,
-            "query": esql_where ~ ' | EVAL score = ' ~ c.twin ~ esql_tail
-          }, ["decay", "twin", "esql", w.name, c.twin_name]) }}
-        {%- endif %}{% if not (loop.last and outer_last) %},{% endif %}
-        {%- endfor %}
+        {%- for t in tasks %}
+        {{ t | tojson }}{% if not loop.last %},{% endif %}
         {%- endfor %}
       ]
     }

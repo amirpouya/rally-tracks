@@ -90,11 +90,15 @@ Note: `include_target_throughput` parameter is ignored in this challenge.
 
 ### Parameters specific to esql-decay challenge
 
-This challenge compares the ES|QL `DECAY` function with Query DSL `function_score` decay functions on `pickup_location` (geo: gauss, exp, linear), `trip_distance` (numeric: gauss) and `pickup_datetime` (date: gauss), over a 1-day (~400k docs) and a 1-week (~2.9M docs) `pickup_datetime` window. Every query returns the top 10 scores. Twin tasks (`twin-*`) run the same pipeline without the decay function, so the difference to the matching `decay-*` task is the cost of computing the score. It requires an Elasticsearch build with the ES|QL `DECAY` function; the `decay-smoke` task fails otherwise.
+This challenge compares the ES|QL `DECAY` function with Query DSL `function_score` decay functions. It covers `pickup_location` (geo_point), `trip_distance` (double), `passenger_count` (integer) and `pickup_datetime` (date), the `gauss`, `exp` and `linear` decay types, and the `offset` and `decay` options (`-opts` tasks). Each case runs over a 1-hour (~17k docs), 1-day (~400k), 1-week (~2.9M) and 1-month (~12.7M) `pickup_datetime` window and returns the top 10 scores. Twin tasks (`twin-*`) run the same pipeline without the decay function, so the difference to the matching `decay-*` task is the cost of computing the score. ES|QL reads geo_point values from `_source`, so the ES|QL geo tasks run fewer iterations on the day and week windows and are left out of the month window. A throughput pass (`throughput-*`) and an ES|QL profile pass (`profile-*`) follow the latency tasks. It requires an Elasticsearch build with the ES|QL `DECAY` function; the `decay-smoke` task fails otherwise.
 
-* `decay_warmup_iterations` (default: 20): Warmup iterations of every decay and twin task.
-* `decay_iterations` (default: 100): Measured iterations of every decay and twin task.
-* `decay_request_timeout` (default: 600): Request timeout, in seconds, of every decay and twin task.
+* `decay_warmup_iterations` (default: 20): Warmup iterations of every latency task, except the ES|QL geo tasks on the day and week windows.
+* `decay_iterations` (default: 100): Measured iterations of every latency task, except the ES|QL geo tasks on the day and week windows.
+* `decay_request_timeout` (default: 600): Request timeout, in seconds, of every decay, twin, throughput and profile task.
+* `decay_throughput_clients` (default: 8): Number of clients of the throughput tasks.
+* `decay_throughput_warmup_time_period` (default: 30): Warmup time period, in seconds, of the throughput tasks.
+* `decay_throughput_time_period` (default: 90): Time period, in seconds, of the throughput tasks.
+* `decay_profile_iterations` (default: 5): Measured iterations of the profile tasks.
 
 ### License
 
