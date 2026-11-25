@@ -1,0 +1,178 @@
+{#
+  ES|QL DECAY vs Query DSL function_score decay.
+
+  Every measured case runs three operations over the same date-filtered row set and returns the top 10 scores:
+    decay-<case>-<window>-esql    ES|QL  EVAL score = DECAY(...) | SORT score DESC | LIMIT 10
+    decay-<case>-<window>-dsl     Query DSL function_score (boost_mode: replace) with the same decay function
+    twin-<field>-<window>-esql    ES|QL pipeline identical to the -esql op, but DECAY replaced by a plain read of
+                                  the same field (one per field: geo, numeric, date), so (esql - twin) isolates
+                                  the cost of evaluating DECAY.
+  plus one Query DSL twin per window (twin-<window>-dsl: function_score with a constant weight), so
+  (dsl - dsl twin) is the cost of reading the field and evaluating the decay function in Query DSL.
+
+  The corpus is not ordered by time; a day holds ~400k docs and the week ~2.9M docs of the full 165M-doc corpus.
+#}
+{% set decay_windows = [
+  {"name": "day",  "gte": "2015-01-03 00:00:00", "lt": "2015-01-04 00:00:00",
+   "gte_iso": "2015-01-03T00:00:00Z", "lt_iso": "2015-01-04T00:00:00Z",
+   "origin": "2015-01-03 12:00:00", "origin_iso": "2015-01-03T12:00:00Z"},
+  {"name": "week", "gte": "2015-01-01 00:00:00", "lt": "2015-01-08 00:00:00",
+   "gte_iso": "2015-01-01T00:00:00Z", "lt_iso": "2015-01-08T00:00:00Z",
+   "origin": "2015-01-04 12:00:00", "origin_iso": "2015-01-04T12:00:00Z"}
+] %}
+{# Times Square #}
+{% set geo_origin_wkt = 'POINT(-73.9855 40.758)' %}
+{% set geo_origin = {"lat": 40.758, "lon": -73.9855} %}
+{% set decay_cases = [
+  {"name": "geo-gauss",     "field": "pickup_location", "type": "gauss",  "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin_name": "geo", "twin": "ST_X(pickup_location)"},
+  {"name": "geo-exp",       "field": "pickup_location", "type": "exp",    "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin": none},
+  {"name": "geo-linear",    "field": "pickup_location", "type": "linear", "esql_origin": 'TO_GEOPOINT("' ~ geo_origin_wkt ~ '")', "esql_scale": '"2km"', "dsl_origin": geo_origin, "dsl_scale": "2km", "twin": none},
+  {"name": "numeric-gauss", "field": "trip_distance",   "type": "gauss",  "esql_origin": "5.0", "esql_scale": "2.0", "dsl_origin": 5.0, "dsl_scale": 2.0, "twin_name": "numeric", "twin": "trip_distance"},
+  {"name": "date-gauss",    "field": "pickup_datetime", "type": "gauss",  "esql_origin": none, "esql_scale": "6 hours", "dsl_origin": none, "dsl_scale": "6h", "twin_name": "date", "twin": "TO_DOUBLE(pickup_datetime)"}
+] %}
+{% set p_decay_warmup_iterations = decay_warmup_iterations | default(20) %}
+{% set p_decay_iterations = decay_iterations | default(100) %}
+{% set p_decay_request_timeout = decay_request_timeout | default(600) %}
+
+{% macro decay_task(name, operation, tags) -%}
+        {
+          "name": "{{ name }}",
+          "operation": {{ operation | tojson }},
+          "tags": {{ tags | tojson }},
+          "clients": 1,
+          "warmup-iterations": {{ p_decay_warmup_iterations }},
+          "iterations": {{ p_decay_iterations }}
+        }
+{%- endmacro %}
+
+    {
+      "name": "esql-decay",
+      "description": "Compares ES|QL DECAY with Query DSL function_score decay (geo, numeric and date; gauss/exp/linear) over a 1-day and a 1-week time window. Each ES|QL case has a twin that reads the same field without DECAY.",
+      "default": false,
+      "schedule": [
+        {
+          "operation": "delete-index",
+          "tags": ["setup"]
+        },
+        {
+          "operation": {
+            "operation-type": "create-index",
+            "settings": {%- if index_settings is defined %} {{index_settings | tojson}} {%- else %} {
+              {# non-serverless-index-settings-marker-start #}{%- if build_flavor != "serverless" or serverless_operator == true -%}
+                {% if p_include_non_serverless_index_settings %}
+              "index.translog.flush_threshold_size": "4g",
+                {% endif %}
+              {%- endif -%}{# non-serverless-index-settings-marker-end #}
+              "index.codec": "best_compression",
+              "index.refresh_interval": "30s"
+            }{%- endif %}
+          },
+          "tags": ["setup"]
+        },
+        {
+          "name": "check-cluster-health",
+          "operation": {
+            "operation-type": "cluster-health",
+            "index": "nyc_taxis",
+            "request-params": {
+              "wait_for_status": "{{cluster_health | default('green')}}",
+              "wait_for_no_relocating_shards": "true"
+            },
+            "retry-until-success": true
+          },
+          "tags": ["setup"]
+        },
+        {
+          "operation": "index",
+          "warmup-time-period": 240,
+          "clients": {{bulk_indexing_clients | default(8)}},
+          "ignore-response-error-level": "{{error_level | default('non-fatal')}}",
+          "tags": ["setup"]
+        },
+        {
+          "name": "refresh-after-index",
+          "operation": "refresh",
+          "tags": ["setup"]
+        },
+        {% if p_include_force_merge %}
+        {
+          "operation": {
+            "operation-type": "force-merge",
+            "index": "nyc_taxis",
+            "request-timeout": 7200{%- if force_merge_max_num_segments is defined %},
+            "max-num-segments": {{ force_merge_max_num_segments | tojson }}
+            {%- endif %}
+          },
+          "tags": ["setup"]
+        },
+        {
+          "name": "refresh-after-force-merge",
+          "operation": "refresh",
+          "tags": ["setup"]
+        },
+        {
+          "operation": "wait-until-merges-finish",
+          "tags": ["setup"]
+        },
+        {% endif %}
+        {# serverless-post-ingest-sleep-marker-start #}{%- if post_ingest_sleep|default(false) -%}
+        {
+          "name": "post-ingest-sleep",
+          "operation": {
+            "operation-type": "sleep",
+            "duration": {{ post_ingest_sleep_duration|default(30) }}
+          }
+        },
+        {%- endif -%}{# serverless-post-ingest-sleep-marker-end #}
+        {
+          "name": "decay-smoke",
+          "operation": {
+            "operation-type": "esql",
+            "query": "ROW x = 1.0 | EVAL score = DECAY(x, 0.0, 1.0, {\"type\": \"gauss\"})"
+          },
+          "tags": ["smoke"],
+          "clients": 1,
+          "warmup-iterations": 0,
+          "iterations": 1
+        },
+        {%- for w in decay_windows %}
+        {%- set outer_last = loop.last %}
+        {%- set esql_where = 'FROM nyc_taxis | WHERE pickup_datetime >= "' ~ w.gte_iso ~ '" AND pickup_datetime < "' ~ w.lt_iso ~ '"' %}
+        {%- set esql_tail = ' | SORT score DESC | LIMIT 10 | KEEP score' %}
+        {%- set dsl_filter = {"bool": {"filter": [{"range": {"pickup_datetime": {"gte": w.gte, "lt": w.lt}}}]}} %}
+        {{ decay_task("twin-" ~ w.name ~ "-dsl", {
+            "operation-type": "search",
+            "index": "nyc_taxis",
+            "request-timeout": p_decay_request_timeout,
+            "body": {"size": 10, "_source": false, "track_total_hits": false,
+                     "query": {"function_score": {"query": dsl_filter, "functions": [{"weight": 1}], "boost_mode": "replace"}}}
+          }, ["decay", "twin", "dsl", w.name]) }},
+        {%- for c in decay_cases %}
+        {%- set esql_origin = c.esql_origin if c.esql_origin is not none else 'TO_DATETIME("' ~ w.origin_iso ~ '")' %}
+        {%- set dsl_origin = c.dsl_origin if c.dsl_origin is not none else w.origin %}
+        {%- set esql_decay = 'DECAY(' ~ c.field ~ ', ' ~ esql_origin ~ ', ' ~ c.esql_scale ~ ', {"type": "' ~ c.type ~ '"})' %}
+        {{ decay_task("decay-" ~ c.name ~ "-" ~ w.name ~ "-esql", {
+            "operation-type": "esql",
+            "request-timeout": p_decay_request_timeout,
+            "query": esql_where ~ ' | EVAL score = ' ~ esql_decay ~ esql_tail
+          }, ["decay", "esql", w.name, c.name]) }},
+        {{ decay_task("decay-" ~ c.name ~ "-" ~ w.name ~ "-dsl", {
+            "operation-type": "search",
+            "index": "nyc_taxis",
+            "request-timeout": p_decay_request_timeout,
+            "body": {"size": 10, "_source": false, "track_total_hits": false,
+                     "query": {"function_score": {"query": dsl_filter,
+                                                  "functions": [{c.type: {c.field: {"origin": dsl_origin, "scale": c.dsl_scale}}}],
+                                                  "boost_mode": "replace"}}}
+          }, ["decay", "dsl", w.name, c.name]) }}
+        {%- if c.twin is not none %},
+        {{ decay_task("twin-" ~ c.twin_name ~ "-" ~ w.name ~ "-esql", {
+            "operation-type": "esql",
+            "request-timeout": p_decay_request_timeout,
+            "query": esql_where ~ ' | EVAL score = ' ~ c.twin ~ esql_tail
+          }, ["decay", "twin", "esql", w.name, c.twin_name]) }}
+        {%- endif %}{% if not (loop.last and outer_last) %},{% endif %}
+        {%- endfor %}
+        {%- endfor %}
+      ]
+    }

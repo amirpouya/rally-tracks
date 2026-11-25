@@ -88,6 +88,14 @@ Note: `include_target_throughput` parameter is ignored in this challenge.
 * `as_time_periods` (default: [300,300,300]): An array with time period, in seconds, of every step.
 * `as_target_throughputs` (default: [2,4,8]): An array with target throughput of each step, expressed in requests/s. Please use `bulk_size` parameter to translate this into docs/s. Target throughput is not configured if the values specified in this array are negative.
 
+### Parameters specific to esql-decay challenge
+
+This challenge compares the ES|QL `DECAY` function with Query DSL `function_score` decay functions on `pickup_location` (geo: gauss, exp, linear), `trip_distance` (numeric: gauss) and `pickup_datetime` (date: gauss), over a 1-day (~400k docs) and a 1-week (~2.9M docs) `pickup_datetime` window. Every query returns the top 10 scores. Twin tasks (`twin-*`) run the same pipeline without the decay function, so the difference to the matching `decay-*` task is the cost of computing the score. It requires an Elasticsearch build with the ES|QL `DECAY` function; the `decay-smoke` task fails otherwise.
+
+* `decay_warmup_iterations` (default: 20): Warmup iterations of every decay and twin task.
+* `decay_iterations` (default: 100): Measured iterations of every decay and twin task.
+* `decay_request_timeout` (default: 600): Request timeout, in seconds, of every decay and twin task.
+
 ### License
 
 According to the [Open Data Law](https://opendata.cityofnewyork.us/open-data-law/) this data is available as public domain.
